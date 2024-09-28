@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 '''引入模块'''
 
 # 数据操作
@@ -21,7 +22,8 @@ from tqdm.auto import tqdm   # 常用于长时间运行的循环中，以直观�
 from tqdm import tqdm
 import random                # 导入 Python 的内置模块 random。random 模块提供了生成伪随机数的功能，这些随机数在编写各种程序和算法时非常有用。
 
-
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+print(device)
 
 '''一些操作'''
 
@@ -82,24 +84,36 @@ class FoodDataset(Dataset):
         return len(self.files)
     
     # 每次从数据集里取出一笔数据（这个方法用于根据索引 idx 从数据集中获取一个样本（图像和标签））
-    def __getitem__(self,idx):
-        fname = self.files[idx]            # 根据索引 idx 获取文件名。
-        im = Image.open(fname)             # 使用 PIL.Image.open 打开图像文件并读取图像。
-        im = self.transform(im)            # 对图像应用预处理变换。（self.transform 是在初始化方法中设置的变换函数，用于对图像进行标准化、调整大小等预处理操作。）
-        #im = self.data[idx]
+    # def __getitem__(self,idx):
+    #     fname = self.files[idx]            # 根据索引 idx 获取文件名。
+    #     im = Image.open(fname)             # 使用 PIL.Image.open 打开图像文件并读取图像。
+    #     im = self.transform(im)            # 对图像应用预处理变换。（self.transform 是在初始化方法中设置的变换函数，用于对图像进行标准化、调整大小等预处理操作。）
+    #     #im = self.data[idx]
+    #     try:
+    #         label = int(fname.split("/")[-1].split("_")[0])   # 尝试从文件名中提取标签，并将其转换为整数。
+    #     except:
+    #         label = -1 # test has no label         # 如果提取标签失败（如在测试集中没有标签），则将标签设为 -1
+    #     return im,label           # 返回图像和标签
+    def __getitem__(self, idx):
+        fname = self.files[idx]
+        im = Image.open(fname)
+        im = self.transform(im)
         try:
-            label = int(fname.split("/")[-1].split("_")[0])   # 尝试从文件名中提取标签，并将其转换为整数。
-        except:
-            label = -1 # test has no label         # 如果提取标签失败（如在测试集中没有标签），则将标签设为 -1
-        return im,label           # 返回图像和标签
+            # 使用 os.path.basename() 来获取文件名
+            filename = os.path.basename(fname)
+            # 假设文件名格式是 "label_xxx.jpg"，我们根据 "_" 分割并提取第一个部分作为标签
+            label = int(filename.split("_")[0])  # 这里假设文件名中的标签部分位于 "_"
+            # print(f"Filename: {fname}, Label: {label}")  # 打印文件名和标签
+        except Exception as e:
+            label = -1
+            # print(f"Failed to parse label for {fname}, setting label to -1. Error: {str(e)}")  # 打印错误信息
+        return im, label
+
+
 
 
 
 '''Model（模版）'''
-
-# torch.nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
-# torch.nn.MaxPool2d(kernel_size, stride, padding)
-# input 維度 [3, 128, 128]
 
 # 基本块
 class BasicBlock(nn.Module):
@@ -120,6 +134,9 @@ class BasicBlock(nn.Module):
 class Classifier(nn.Module):
     def __init__(self):
         super(Classifier, self).__init__()
+        # torch.nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
+        # torch.nn.MaxPool2d(kernel_size, stride, padding)
+        # input 維度 [3, 128, 128]
 
         self.cnn = nn.Sequential(
             BasicBlock(3, 64),       # [64, 128, 128]     # [64, 64, 64]
@@ -146,26 +163,22 @@ class Classifier(nn.Module):
 
 
 '''定义参数'''
-
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
 config = {
-    'seed': 6666,
+    'seed': 66,
     'dataset_dir': "./food11",
-    'n_epochs': 10,      
+    'n_epochs': 8,      
     'batch_size': 64, 
     'learning_rate': 0.0003,           
     'weight_decay':1e-5,
-    'early_stop': 300,
+    'early_stop': 5,
     'clip_flag': True, 
-    'save_path': './models/model.ckpt',
+    'save_path': './models/best.ckpt',
 }
-print(device)
-
 
 
 '''训练(模版)'''
 def trainer(train_loader, valid_loader, model, config, device):
-    '''  train_loader:训练集的DataLoader，用于批量加载训练数据。
+    '''    train_loader:训练集的DataLoader，用于批量加载训练数据。
            valid_loader:验证集的DataLoader，用于批量加载验证数据。
            model:要训练的神经网络模型。
            config:包含训练配置参数的字典，如学习率、训练轮数等。
@@ -187,18 +200,23 @@ def trainer(train_loader, valid_loader, model, config, device):
     
     n_epochs = config['n_epochs']     # 需要训练的n_epoch
     best_loss = math.inf              # 初始化为正无穷 (math.inf)，用于记录在训练过程中得到的最佳验证损失。
-    # step = 0                          # 初始化为 0，用于跟踪训练步数。
+    step = 0                          # 初始化为 0，用于跟踪训练步数。
     early_stop_count =  0             # 初始化为 0，用于记录早停计数。
 
 
     # 训练过程
     for epoch in range(n_epochs):
+
+        # ---------- Training ----------
         model.train()
         loss_record = []           # 用于记录每个批次的训练损失。
         train_accs = []            # 用于记录每个批次的训练准确率。
-        train_pbar = tqdm(train_loader, position=0, leave=True)   # 使用 tqdm 创建一个进度条，显示训练进度。position=0 表示进度条将显示在最顶部。leave 参数控制进度条在循环完成后是否保持在终端上。如果 leave=True，进度条在循环结束后将继续显示，通常以完成状态显示。
+        train_pbar = tqdm(train_loader, position=0, leave=True, disable=False)   # 使用 tqdm 创建一个进度条，显示训练进度。position=0 表示进度条将显示在最顶部。leave 参数控制进度条在循环完成后是否保持在终端上。如果 leave=True，进度条在循环结束后将继续显示，通常以完成状态显示。
 
         for x, y in train_pbar:      # 遍历训练数据加载器中的每个批次。
+            # print(y)  # 检查标签
+            # # 打印图片的形状和像素值范围
+            # print(x.shape, x.min(), x.max())  # 确认每个批次的数据形状和值范围是否正确
 
             # 前馈
             optimizer.zero_grad()             
@@ -213,13 +231,15 @@ def trainer(train_loader, valid_loader, model, config, device):
                max_norm 是梯度范数的最大允许值。
                clip_grad_norm_ 会将所有参数的梯度缩放到一个不超过这个最大值的范围。
             '''
-            if config['clip_flag']:  # 检查是否启用梯度裁剪。（对梯度进行裁剪，防止梯度爆炸。）
-                grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=10)
+            # for name, param in model.named_parameters():
+            #     if param.grad is not None:
+            #         print(f'{name}: {param.grad.norm()}')
+
+            grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=10)
 
             # 更新
             optimizer.step()    
 
-            
 
             acc = (pred.argmax(dim=-1) == y.to(device)).float().mean()  # 计算当前批次的训练准确率。
             l_ = loss.detach().item()    # 获取当前批次的损失值
@@ -228,15 +248,17 @@ def trainer(train_loader, valid_loader, model, config, device):
             train_pbar.set_description(f'Epoch [{epoch+1}/{n_epochs}]')   # 更新进度条的描述。
             train_pbar.set_postfix({'loss': f'{l_:.5f}', 'acc': f'{acc:.5f}'})   # 更新进度条的后缀，显示当前损失和准确率。
         
-        
         mean_train_acc = sum(train_accs) / len(train_accs)    # 计算训练集上的平均准确率。
         mean_train_loss = sum(loss_record)/len(loss_record)   # 计算训练集上的平均损失。
 
-        print(f'Epoch [{epoch+1}/{n_epochs}]: Train loss: {mean_train_loss:.4f},acc: {mean_train_acc:.4f} ')
+        tqdm.write(f'Epoch [{epoch+1}/{n_epochs}]: Train loss: {mean_train_loss:.4f},acc: {mean_train_acc:.4f} ')
         
+        
+        # ---------- Validation ----------        
         model.eval()                               # 设置模型为评估模式
         loss_record = []                           # 用于记录每个批次的验证损失。
         test_accs = []                             # 用于记录每个批次的验证准确率。
+        
         for x, y in valid_loader:                  # 遍历验证数据加载器中的每个批次
             x, y = x.to(device), y.to(device)
             with torch.no_grad():
@@ -252,12 +274,13 @@ def trainer(train_loader, valid_loader, model, config, device):
         mean_valid_loss = sum(loss_record)/len(loss_record)  # 计算验证集上的平均损失。
 
         # 打印当前轮次的训练和验证损失及准确率。
-        print(f'Epoch [{epoch+1}/{n_epochs}]: Valid loss: {mean_valid_loss:.4f},acc: {mean_valid_acc:.4f} ')
+        tqdm.write(f'Epoch [{epoch+1}/{n_epochs}]: Valid loss: {mean_valid_loss:.4f},acc: {mean_valid_acc:.4f} ')
         
 
         if mean_valid_loss < best_loss:      # 如果当前验证损失低于之前记录的最佳损失。
             best_loss = mean_valid_loss      # 更新最佳损失值。
-            torch.save(model.state_dict(), save_path) # 保存最优模型
+            # torch.save(model.state_dict(), f"{save_path}_best.ckpt) # 保存最优模型
+            torch.save(model.state_dict(), save_path) 
             print('Saving model with loss {:.3f}...'.format(best_loss))  # 打印保存模型的消息。
             early_stop_count = 0  # 重置早停计数器，因为模型性能改善。
         else: 
@@ -270,21 +293,22 @@ def trainer(train_loader, valid_loader, model, config, device):
 
 '''训练准备'''
 
-# 随机种子
 same_seeds(config['seed'])
-
-# 读取数据
 _dataset_dir = config['dataset_dir']
+
 # 训练（这个参数指定用于加载数据的子进程数量。如果 num_workers 为 0，数据加载将会在主进程中完成。）
-train_set = FoodDataset(os.path.join(_dataset_dir,"training"), tfm=train_tfm)
+train_set = FoodDataset(os.path.join(_dataset_dir,"train"), tfm=train_tfm)
 train_loader = DataLoader(train_set, batch_size=config['batch_size'], shuffle=True, num_workers=0, pin_memory=True)
+
 # 验证
-valid_set = FoodDataset(os.path.join(_dataset_dir,"validation"), tfm=test_tfm)
+valid_set = FoodDataset(os.path.join(_dataset_dir,"valid"), tfm=test_tfm)
 valid_loader = DataLoader(valid_set, batch_size=config['batch_size'], shuffle=True, num_workers=0, pin_memory=True)
+
 # 测试
 # 测试集保证输出顺序一致
 test_set = FoodDataset(os.path.join(_dataset_dir,"test"), tfm=test_tfm)
 test_loader = DataLoader(test_set, batch_size=config['batch_size'], shuffle=False, num_workers=0, pin_memory=True)
+
 # print(test_loader)
 # 测试集数据扩增,使用数据增强来测试模型的鲁棒性
 # test_set = FoodDataset(os.path.join(_dataset_dir,"test"), tfm=train_tfm)
@@ -300,8 +324,8 @@ test_loader = DataLoader(test_set, batch_size=config['batch_size'], shuffle=Fals
 
 '''开始训练'''
 
-# model = Classifier().to(device)
-# trainer(train_loader, valid_loader, model, config, device)
+model = Classifier().to(device)
+trainer(train_loader, valid_loader, model, config, device)
 
 
 
@@ -316,8 +340,8 @@ def predict(model, test_loader):
     for batch in tqdm(test_loader):
             
         features, _ = batch    # 解包元组
-        print(type(features))  # 调试：打印 features 的类型
-        print(features.shape)  # 调试：打印 features 的形状
+        # print(type(features))  # 调试：打印 features 的类型
+        # print(features.shape)  # 调试：打印 features 的形状
         # print("1",features,features.shape)
         # features=torch.stack(features, dim=1)
         features = features.to(device)
@@ -344,12 +368,11 @@ def save_pred(preds, file):                                       # 定义了一
             writer.writerow([pad4(i+1), p])                               # 将当前预测结果的索引和值写入到 CSV 文件中的一行中。
 
 
-# 加载模型
-model = Classifier().to(device)
-model.load_state_dict(torch.load(config['save_path']))
-# print(config['save_path'])
+# # 加载模型
+# model = Classifier().to(device)
+# model.load_state_dict(torch.load(config['save_path']))
 
-# 开始预测
-preds = predict(model, test_loader)
-print(preds)
-save_pred(preds,'prdeiction.csv')
+# # 开始预测
+# preds = predict(model, test_loader)
+# # print(preds)
+# save_pred(preds,'prdeiction.csv')
