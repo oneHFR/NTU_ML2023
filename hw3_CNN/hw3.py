@@ -40,7 +40,7 @@ def same_seeds(seed):                           # 它的输入 seed 是一个整
 
 # 定义对图片的变换操作（数据增强）
 
-
+"""
 # 一般情况下，我们不会在验证集和测试集上做数据扩增
 # 1.将图片裁剪成同样的大小 2.转换成Tensor就行，并将像素值标准化到 0-1 之间。
 test_tfm = transforms.Compose([        # 将多个图像变换组合在一起，以便依次对图像进行处理。  transforms.Compose 接受一个包含多个变换操作的列表，并返回一个组合变换。
@@ -62,7 +62,59 @@ train_tfm = transforms.Compose([
     # ToTensor() 放在所有处理的最后
     transforms.ToTensor(),
 ])
+"""
 
+
+# Normally, We don't need augmentations in testing and validation.
+# All we need here is to resize the PIL image and transform it into Tensor.
+# 这里的Compose是一个组合操作集，是图像处理的流水线，可以按照想要的顺序进行添加
+test_tfm = transforms.Compose([
+    transforms.Resize((128, 128)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.5538, 0.4508, 0.3436], std=[0.0709, 0.0724, 0.0752])
+
+])
+# tensor([0.5538, 0.4508, 0.3436]) mean
+# tensor([0.0709, 0.0724, 0.0752]) std
+
+# However, it is also possible to use augmentation in the testing phase.
+# You may use train_tfm to produce a variety of images and then test using ensemble methods
+train_tfm = transforms.Compose([
+    # Resize the image into a fixed shape (height = width = 128)
+    # transforms.Resize((128, 128)),
+    # You may add some transforms here.这里是我们的Question需要思考回答的地方
+    transforms.RandomResizedCrop((128, 128), scale=(0.7, 1.0)),
+    transforms.RandomHorizontalFlip(0.5),
+    transforms.RandomVerticalFlip(0.5),
+    transforms.RandomRotation(180),
+    transforms.RandomAffine(30),
+    transforms.RandomGrayscale(p=0.2),
+    transforms.Normalize(mean=[0.4697, 0.3881, 0.3036], std=[0.0946, 0.0824, 0.0766]),
+
+    # ToTensor() should be the last one of the transforms.
+    transforms.ToTensor(),
+])
+# tensor([0.4697, 0.3881, 0.3036]) mean
+# tensor([0.0946, 0.0824, 0.0766]) std
+
+"""
+至于这里的归一化是如何的的得到的 我觉得这个在顺序上是有趣的矛盾的
+def get_mean_std(loader):
+  # VAR[X] = E[X**2] - E[X]**2
+  channel_sum, channel_squared_sum, num_batches = 0, 0, 0
+  for data, _ in loader:
+    channel_sum += torch.mean(data, dim=[0, 2, 3])
+    channel_squared_sum += torch.mean(data**2, dim=[0, 2, 3])
+    num_batches += 1
+  mean = channel_sum / num_batches
+  std = channel_squared_sum / num_batches - mean**2
+  return mean, std
+
+mean, std = get_mean_std(test_loader)
+print(mean)
+print(std)
+
+"""
 
 
 '''Dataset'''
@@ -160,7 +212,9 @@ class Classifier(nn.Module):
         out = self.fc(out)
         return out
 
-
+# Pretrained model
+from torchvision.models import resnet18
+model = resnet18(pretrained=False, progress=False, num_classes=11)
 
 '''定义参数'''
 config = {
@@ -304,6 +358,23 @@ train_loader = DataLoader(train_set, batch_size=config['batch_size'], shuffle=Tr
 valid_set = FoodDataset(os.path.join(_dataset_dir,"valid"), tfm=test_tfm)
 valid_loader = DataLoader(valid_set, batch_size=config['batch_size'], shuffle=True, num_workers=0, pin_memory=True)
 
+
+def get_mean_std(loader):
+  # VAR[X] = E[X**2] - E[X]**2
+  channel_sum, channel_squared_sum, num_batches = 0, 0, 0
+  for data, _ in loader:
+    channel_sum += torch.mean(data, dim=[0, 2, 3])
+    channel_squared_sum += torch.mean(data**2, dim=[0, 2, 3])
+    num_batches += 1
+  mean = channel_sum / num_batches
+  std = channel_squared_sum / num_batches - mean**2
+  return mean, std
+
+mean, std = get_mean_std(train_loader)
+print(mean)
+print(std)
+
+
 # 测试
 # 测试集保证输出顺序一致
 test_set = FoodDataset(os.path.join(_dataset_dir,"test"), tfm=test_tfm)
@@ -324,7 +395,8 @@ test_loader = DataLoader(test_set, batch_size=config['batch_size'], shuffle=Fals
 
 '''开始训练'''
 
-model = Classifier().to(device)
+# model = Classifier().to(device)
+model = model.to(device)
 trainer(train_loader, valid_loader, model, config, device)
 
 
